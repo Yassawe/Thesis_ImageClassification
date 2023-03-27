@@ -1,6 +1,7 @@
 import os, torch, argparse
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import numpy as np
 
 from torch.distributions import normal
 
@@ -10,13 +11,13 @@ def saveData(data, rank, state = "beforeAllReduce"):
     filename = "GPU" + str(rank) + "_" + state
     np.savetxt(path+filename+".txt", data.numpy())
 
+def generateTensor(M, mean, std):
+    return torch.randn(M) * std + mean
 
 def runProcess(rank, args):
     torch.cuda.set_device(rank)
 
-    m = normal.Normal(torch.tensor([args.mean]), torch.tensor([args.std]))
-
-    data = m.sample(M)
+    data = generateTensor(args.M, args.mean, args.std)
 
     # DATA BEFORE ALLREDUCE
     saveData(data, rank, "beforeAllReduce")
@@ -48,5 +49,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    mp.spawn(init_process, nprocs = worldsize, args=(runProcess, args)) 
+    mp.spawn(init_process, nprocs = args.gpus, args=(runProcess, args)) 
     
