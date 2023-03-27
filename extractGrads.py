@@ -67,7 +67,7 @@ def train(gpu, train_dataset, args):
  
     dist.init_process_group(backend='nccl', world_size=args.gpus, rank=gpu)
     
-    model = torchvision.models.resnet152(pretrained=False)
+    model = torchvision.models.resnet50(pretrained=False)
 
     torch.cuda.set_device(gpu)
 
