@@ -23,12 +23,12 @@ def runProcess(rank, args):
     saveData(data, rank, "beforeAllReduce")
 
     ###
-    data.cuda()
+    data = data.cuda()
     dist.all_reduce(data)
     ###
 
     # DATA AFTER ALLREDUCE
-    data.cpu()
+    data = data.cpu()
     saveData(data, rank, "afterAllReduce")
 
 
