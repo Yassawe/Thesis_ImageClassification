@@ -48,24 +48,23 @@ def main():
    
     parser.add_argument('-g', '--gpus', default=4, type=int,
                         help='number of gpus per node')
-    parser.add_argument('--epochs', default=3, type=int, metavar='N',
+    parser.add_argument('--epochs', default=200, type=int, metavar='N',
                         help='number of total epochs to run')
     
-    parser.add_argument('--datatype', default='F16', type=str)
+    parser.add_argument('--datatype', default='F32', type=str)
 
     parser.add_argument('--lr', default = 1e-3, type=float)
 
     parser.add_argument('--rings', default=4, type=int, help='num of nccl rings')
 
-    parser.add_argument('--runnum', default=1, type=int)
 
     args = parser.parse_args()
     os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '8008'
+    os.environ['MASTER_PORT'] = '2023'
 
     os.environ['NCCL_ALGO'] = 'Ring'
-    os.environ['NCCL_MAX_NCHANNELS'] = str(args.rings)
-    os.environ['NCCL_MIN_NCHANNELS'] = str(args.rings)
+    # os.environ['NCCL_MAX_NCHANNELS'] = str(args.rings)
+    # os.environ['NCCL_MIN_NCHANNELS'] = str(args.rings)
     os.environ['NCCL_DEBUG'] = "INFO"
 
     train_dataset = torchvision.datasets.CIFAR10(root='./data',
@@ -91,7 +90,7 @@ def train(gpu, train_dataset, test_dataset, args):
 
     #SETUPS
     setrandom(20214229)
-    filename = "trace/"+str(args.rings) + "RINGS_" + args.datatype
+    filename = "./trace/1DeviceDropped"
     ext = ".csv"
 
 
@@ -174,7 +173,7 @@ def train(gpu, train_dataset, test_dataset, args):
                     print("{}".format(loss.item()), file=f)
         scheduler.step()
 
-        if gpu==0 and epoch%50==0:
+        if gpu==0 and epoch%10==0:
             evaluation(model, gpu, epoch+1, test_loader, filename, "Test set", args)
             
 

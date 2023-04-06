@@ -1,4 +1,2 @@
-python3 modelTraining.py --rings 1 --epochs 201 --lr 1e-2 --datatype BF16 
-python3 modelTraining.py --rings 2 --epochs 201 --lr 1e-2 --datatype BF16 
-python3 modelTraining.py --rings 3 --epochs 201 --lr 1e-2 --datatype BF16 
-python3 modelTraining.py --rings 4 --epochs 201 --lr 1e-2 --datatype BF16 
+export LD_LIBRARY_PATH=/src/main/KimSum/build/lib/
+python3 distributedModelTraining.py --epochs 51 --lr 1e-2 --datatype F32 
