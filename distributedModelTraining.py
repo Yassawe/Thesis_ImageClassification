@@ -55,6 +55,8 @@ def main():
 
     parser.add_argument('--lr', default = 1e-3, type=float)
 
+    parser.add_argument('--name', default="baseline", type=str)
+
     parser.add_argument('--rings', default=4, type=int, help='num of nccl rings')
 
 
@@ -90,7 +92,7 @@ def train(gpu, train_dataset, test_dataset, args):
 
     #SETUPS
     setrandom(20214229)
-    filename = "./trace/1DeviceDropped"
+    filename = "./trace/"+args.name
     ext = ".csv"
 
 
@@ -134,6 +136,13 @@ def train(gpu, train_dataset, test_dataset, args):
                                               shuffle=False,
                                               pin_memory=True)
 
+    eval_set = torch.utils.data.Subset(train_dataset, [random.randint(0,len(train_dataset)-1) for i in range(len(test_dataset))])
+    eval_loader = torch.utils.data.DataLoader(dataset=eval_set,
+                                                    batch_size=batch_size,
+                                                    shuffle=True,
+                                                    pin_memory=True
+                                                    )
+
 
     total_step = len(train_loader)
 
@@ -174,7 +183,9 @@ def train(gpu, train_dataset, test_dataset, args):
         scheduler.step()
 
         if gpu==0 and epoch%10==0:
-            evaluation(model, gpu, epoch+1, test_loader, filename, "Test set", args)
+            evaluation(model, gpu, epoch+1, train_loader, filename, "TRAIN SET", args)
+            evaluation(model, gpu, epoch+1, eval_loader, filename, "TEST SET", args)
+            
             
 
 def evaluation(model, gpu, epoch, dataloader, filename, evalname, args):
