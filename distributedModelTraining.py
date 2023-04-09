@@ -15,6 +15,8 @@ import random
 import numpy as np
 import pandas as pd
 import warnings
+
+
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
 
 
@@ -151,11 +153,14 @@ def train(gpu, train_dataset, test_dataset, args):
             print("Loss", file=f)
         open(filename+"_accuracies.txt", "w+").close()
 
+    idx = 0
+
     model.train()
 
+    
     for epoch in range(args.epochs):
         for i, (images, labels) in enumerate(train_loader):
-
+            idx+=1
             if args.datatype=="F16":
                 images = images.cuda(gpu, non_blocking=True).half()
             elif args.datatype=="BF16":
@@ -176,15 +181,17 @@ def train(gpu, train_dataset, test_dataset, args):
             optimizer.step()
             
             if gpu == 0:
-                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(epoch + 1, args.epochs, i + 1, total_step,
-                                                                         loss.item()))
+                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch, args.epochs, i + 1, total_step, loss.item()))
                 with open(filename+ext, "a+") as f:
                     print("{}".format(loss.item()), file=f)
-        scheduler.step()
-
+        
+        scheduler.step()    
+        
         if gpu==0 and epoch%10==0:
-            evaluation(model, gpu, epoch+1, train_loader, filename, "TRAIN SET", args)
-            evaluation(model, gpu, epoch+1, eval_loader, filename, "TEST SET", args)
+            evaluation(model, gpu, epoch+1, eval_loader, filename, "TRAIN SET", args)
+            evaluation(model, gpu, epoch+1, test_loader, filename, "TEST SET", args)
+        
+
             
             
 
