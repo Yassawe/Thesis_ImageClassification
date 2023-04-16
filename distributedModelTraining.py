@@ -45,6 +45,28 @@ def setrandom(seed):
     torch.backends.cudnn.deterministic = True
 
 
+def save_checkpoint(ddp_model, optimizer, epoch, folder, name):
+    path = folder+name + ".pt"
+
+    state = {
+            'epoch':epoch,
+            'model': ddp_model.module.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            }
+    
+    torch.save(state, path)
+
+def load_checkpoint(rank, model, optimizer, path):
+
+    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+
+    checkpoint = torch.load(path, map_location=map_location)
+
+    model.load_state_dict(checkpoint['model']) 
+    optimizer.load_state_dict(checkpoint['optimizer'])
+
+    return checkpoint['epoch']
+
 def main():
     parser = argparse.ArgumentParser()
    
@@ -53,23 +75,21 @@ def main():
     parser.add_argument('--epochs', default=200, type=int, metavar='N',
                         help='number of total epochs to run')
     
-    parser.add_argument('--datatype', default='F32', type=str)
 
     parser.add_argument('--lr', default = 1e-3, type=float)
 
     parser.add_argument('--name', default="baseline", type=str)
+    parser.add_argument('--recordCheckpoints', default=1, type=int)
+    parser.add_argument('--checkpoint_path', default=None, type=str)
 
-    #parser.add_argument('--rings', default=4, type=int, help='num of nccl rings')
+    
 
 
     args = parser.parse_args()
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '2023'
-
     os.environ['NCCL_ALGO'] = 'Ring'
-    # os.environ['NCCL_MAX_NCHANNELS'] = str(args.rings)
-    # os.environ['NCCL_MIN_NCHANNELS'] = str(args.rings)
-    os.environ['NCCL_DEBUG'] = "INFO"
+    #os.environ['NCCL_DEBUG'] = "INFO"
 
     train_dataset = torchvision.datasets.CIFAR10(root='./data',
                                                train=True,
@@ -93,35 +113,34 @@ def train(gpu, train_dataset, test_dataset, args):
 
 
     #SETUPS
-    setrandom(20214229)
+    #setrandom(20214229)
     filename = "./trace/"+args.name
     ext = ".csv"
 
+    testdump = filename+"TEST_ACC.txt"
+    traindump = filename+"TRAIN_ACC.txt"
+    checkpointdump = "./checkpoints/"
 
-    #MODEL AND DATATYPE 
-    model = torchvision.models.resnet50(pretrained=False)
-
-    #default is float32
-    
-    if args.datatype=="F16":
-        model.half()
-    elif args.datatype=="BF16": 
-        model.bfloat16()
-
-    for layer in model.modules():
-        if isinstance(layer, nn.BatchNorm2d): #for numerical stability reasons, otherwise occasional NaN
-            layer.float()
-
-    model.cuda(gpu)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    accSamplePeriod = 10
+    checkpointPeriod = 50
 
 
-    #HYPERPARAMETERS
+    #MODEL AND HYPERPARAMETERS
+    model = torchvision.models.vgg16(weights=None).cuda(gpu)
+
     batch_size = 64
     criterion = nn.CrossEntropyLoss().cuda(gpu)
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.89, weight_decay=2e-2)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=300)
- 
+    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1.5e-2)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=501)
+    total_epochs = args.epochs
+    lastCheckpointEpoch=0
+
+    if args.checkpoint_path is not None:
+        lastCheckpointEpoch = load_checkpoint(gpu, model, optimizer, args.checkpoint_path)
+
+    total_epochs-=lastCheckpointEpoch
+    
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
 
     
     #DATASETS                           
@@ -151,23 +170,18 @@ def train(gpu, train_dataset, test_dataset, args):
     if gpu==0:
         with open(filename+ext, "w+") as f:
             print("Loss", file=f)
-        open(filename+"_accuracies.txt", "w+").close()
+        open(testdump, "w+").close()
+        open(traindump, "w+").close()
 
     idx = 0
 
     model.train()
 
-    
-    for epoch in range(args.epochs):
+    for epoch in range(total_epochs):
         for i, (images, labels) in enumerate(train_loader):
             idx+=1
-            if args.datatype=="F16":
-                images = images.cuda(gpu, non_blocking=True).half()
-            elif args.datatype=="BF16":
-                images = images.cuda(gpu, non_blocking=True).bfloat16()
-            else:
-                images = images.cuda(gpu, non_blocking=True)
-
+            
+            images = images.cuda(gpu, non_blocking=True)
             labels = labels.cuda(gpu, non_blocking=True)
 
             # Forward pass
@@ -181,33 +195,28 @@ def train(gpu, train_dataset, test_dataset, args):
             optimizer.step()
             
             if gpu == 0:
-                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch, args.epochs, i + 1, total_step, loss.item()))
+                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch+lastCheckpointEpoch, args.epochs, i + 1, total_step, loss.item()))
                 with open(filename+ext, "a+") as f:
                     print("{}".format(loss.item()), file=f)
         
         scheduler.step()    
         
-        if gpu==0 and epoch%10==0:
-            evaluation(model, gpu, epoch+1, eval_loader, filename, "TRAIN SET", args)
-            evaluation(model, gpu, epoch+1, test_loader, filename, "TEST SET", args)
-        
+        if gpu==0 and (epoch+1)%accSamplePeriod==0:
+            evaluation(model, gpu, epoch+lastCheckpointEpoch+1, eval_loader, traindump, "TRAIN SET", args)
+            evaluation(model, gpu, epoch+lastCheckpointEpoch+1, test_loader, testdump, "TEST SET", args)
 
-            
-            
+        if gpu==0 and (epoch+1)%checkpointPeriod==0 and args.recordCheckpoints==1:
+            save_checkpoint(model, optimizer, epoch+lastCheckpointEpoch+1, checkpointdump, args.name+"_"+str(epoch+lastCheckpointEpoch))
 
-def evaluation(model, gpu, epoch, dataloader, filename, evalname, args):
+
+def evaluation(model, gpu, epoch, dataloader, file, evalname, args):
     model.eval()
     with torch.no_grad():
         correct = 0
         total = 0
         for images, labels in dataloader:
-            if args.datatype=="F16":
-                images = images.cuda(gpu, non_blocking=True).half()
-            elif args.datatype=="BF16":
-                images = images.cuda(gpu, non_blocking=True).bfloat16()
-            else:
-                images = images.cuda(gpu, non_blocking=True)
-
+            
+            images = images.cuda(gpu, non_blocking=True)
             labels = labels.cuda(gpu, non_blocking=True)
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
@@ -215,7 +224,7 @@ def evaluation(model, gpu, epoch, dataloader, filename, evalname, args):
             correct += (predicted == labels).sum().item()
         accuracy = 100 * correct / total
     model.train()
-    with open(filename+"_accuracies.txt", "a+") as f:
+    with open(file, "a+") as f:
         print("Epoch {}. {} accuracy = {}%".format(epoch, evalname, accuracy), file=f)  
 
 if __name__ == '__main__':

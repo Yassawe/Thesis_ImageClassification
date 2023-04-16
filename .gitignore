@@ -1,5 +1,6 @@
 trace/
 data/
 grads/
-test/
 timing/
+archive/
+checkpoints/
