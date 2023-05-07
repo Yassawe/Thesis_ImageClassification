@@ -14,10 +14,9 @@ import torch.distributed as dist
 import random
 import numpy as np
 import pandas as pd
+import torch.cuda.profiler as profiler
 import warnings
 
-
-import torch.cuda.profiler as profiler
 
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
 
@@ -27,12 +26,12 @@ train_transform = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2471, 0.2435, 0.2616)),
 ])
 
 test_transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2471, 0.2435, 0.2616)),
 ])
 
 
@@ -47,6 +46,28 @@ def setrandom(seed):
     torch.backends.cudnn.deterministic = True
 
 
+def save_checkpoint(ddp_model, optimizer, epoch, folder, name):
+    path = folder+name + ".pt"
+
+    state = {
+            'epoch':epoch,
+            'model': ddp_model.module.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            }
+    
+    torch.save(state, path)
+
+def load_checkpoint(rank, model, optimizer, path):
+
+    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+
+    checkpoint = torch.load(path, map_location=map_location)
+
+    model.load_state_dict(checkpoint['model']) 
+    optimizer.load_state_dict(checkpoint['optimizer'])
+
+    return checkpoint['epoch']
+
 def main():
     parser = argparse.ArgumentParser()
    
@@ -54,34 +75,30 @@ def main():
                         help='number of gpus per node')
     parser.add_argument('--epochs', default=200, type=int, metavar='N',
                         help='number of total epochs to run')
-
+    
 
     parser.add_argument('--lr', default = 1e-3, type=float)
 
     parser.add_argument('--name', default="baseline", type=str)
+    parser.add_argument('--experiment', default="baseline", type=str)
+    parser.add_argument('--recordCheckpoints', default=0, type=int)
+    parser.add_argument('--checkpoint_path', default=None, type=str)
+
+    
 
 
     args = parser.parse_args()
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '2023'
-
     os.environ['NCCL_ALGO'] = 'Ring'
-    os.environ['NCCL_CHECKS_DISABLE'] = '1'
-    os.environ['NCCL_PROTO'] = 'LL'
+    #os.environ['NCCL_DEBUG'] = "INFO"
 
-    os.environ['NCCL_MAX_NCHANNELS'] = "1"
-    os.environ['NCCL_MIN_NCHANNELS'] = "1"
-
-    # os.environ['NCCL_MAX_NCHANNELS'] = str(args.rings)
-    # os.environ['NCCL_MIN_NCHANNELS'] = str(args.rings)
-    # os.environ['NCCL_DEBUG'] = "INFO"
-
-    train_dataset = torchvision.datasets.CIFAR10(root='./data',
+    train_dataset = torchvision.datasets.CIFAR10(root='../datasets',
                                                train=True,
                                                transform=train_transform,
                                                download=True)
 
-    test_dataset = torchvision.datasets.CIFAR10(root='./data',
+    test_dataset = torchvision.datasets.CIFAR10(root='../datasets',
                                                 train=False,
                                                 transform=test_transform,
                                                 download=True)
@@ -99,24 +116,18 @@ def train(gpu, train_dataset, test_dataset, args):
 
     #SETUPS
     setrandom(20214229)
-    filename = "./trace/"+args.name
-    ext = ".csv"
+    
+    #MODEL AND HYPERPARAMETERS
+    model = torchvision.models.resnet50(weights=None).cuda(gpu)
 
-
-    #MODEL AND DATATYPE 
-    model = torchvision.models.resnet50(weights=None)
-
-
-    model.cuda(gpu)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
-
-
-    #HYPERPARAMETERS
-    batch_size = 128
+    batch_size = 32//args.gpus
     criterion = nn.CrossEntropyLoss().cuda(gpu)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1.5e-2)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
- 
+    total_epochs = args.epochs
+
+    
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
 
     
     #DATASETS                           
@@ -128,51 +139,32 @@ def train(gpu, train_dataset, test_dataset, args):
                                                pin_memory=True,
                                                sampler=train_sampler)
     
-    test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
-                                              batch_size = batch_size,
-                                              shuffle=False,
-                                              pin_memory=True)
-
-    eval_set = torch.utils.data.Subset(train_dataset, [random.randint(0,len(train_dataset)-1) for i in range(len(test_dataset))])
-    eval_loader = torch.utils.data.DataLoader(dataset=eval_set,
-                                                    batch_size=batch_size,
-                                                    shuffle=True,
-                                                    pin_memory=True
-                                                    )
-
-
-    total_step = len(train_loader)
-
-    # if gpu==0:
-    #     with open(filename+ext, "w+") as f:
-    #         print("Loss", file=f)
-    #     open(filename+"_accuracies.txt", "w+").close()
 
     idx = 0
-
     model.train()
-    target_gpu = 1
-    
-    start_iter = 5
-    end_iter = 15
 
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
+
+    # target_iter = 100
+    # time_iters=[i for i in range(100,200)]
+    # start = torch.cuda.Event(enable_timing=True)
+    # end = torch.cuda.Event(enable_timing=True) 
+
+    # runtimes = [] 
+
+    total_step = len(train_loader)
     
-    for epoch in range(args.epochs):
+    if gpu==0:
+        profiler.start()
+
+    for epoch in range(total_epochs):
         for i, (images, labels) in enumerate(train_loader):
-            
             idx+=1
-
-            if gpu==target_gpu and idx==start_iter:
-                print("PROFILING STARTS")
-                start.record()
-                
-                # profiler.start()
-             
+            
             images = images.cuda(gpu, non_blocking=True)
             labels = labels.cuda(gpu, non_blocking=True)
 
+            # if idx in time_iters:
+            #     start.record()
 
             # Forward pass
             outputs = model(images)
@@ -184,48 +176,38 @@ def train(gpu, train_dataset, test_dataset, args):
             
             optimizer.step()
 
-            if gpu==target_gpu and idx==end_iter:
-                print("PROFILING STOPS")
-                end.record()
-                
-                # profiler.stop()
-                
-            if idx>end_iter:
-                torch.cuda.synchronize()
-                break
+            if gpu == 0:
+                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch, args.epochs, i + 1, total_step, loss.item()))
 
-            # if gpu == 0:
-            #     print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch, args.epochs, i + 1, total_step, loss.item()))
-            #     # with open(filename+ext, "a+") as f:
-            #     #     print("{}".format(loss.item()), file=f)
+            # if idx in time_iters:
+            #     end.record()
+            #     torch.cuda.synchronize()
+            #     runtimes.append(start.elapsed_time(end))
+
+
             
+        #     if idx>=time_iters[-1]:
+        #         break
+        # if idx>=time_iters[-1]:
+        #     break
 
-        if idx>=end_iter:
-            break
-
-        scheduler.step()    
+        scheduler.step()
     
-    if gpu==target_gpu:
-        print(" {} TIME ELAPSED IS: {}".format(args.name, start.elapsed_time(end)))
-       
+    if gpu==0:
+        profiler.stop()
+
+    # print("GPU {}. Model {}. Average iteration time = {}".format(gpu, args.name, sum(runtimes)/len(runtimes)))  
         
+       
 
-            
-            
-
-def evaluation(model, gpu, epoch, dataloader, filename, evalname, args):
+def evaluation(model, gpu, epoch, dataloader, file, evalname, args):
     model.eval()
     with torch.no_grad():
         correct = 0
         total = 0
         for images, labels in dataloader:
-            if args.datatype=="F16":
-                images = images.cuda(gpu, non_blocking=True).half()
-            elif args.datatype=="BF16":
-                images = images.cuda(gpu, non_blocking=True).bfloat16()
-            else:
-                images = images.cuda(gpu, non_blocking=True)
-
+            
+            images = images.cuda(gpu, non_blocking=True)
             labels = labels.cuda(gpu, non_blocking=True)
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
@@ -233,8 +215,6 @@ def evaluation(model, gpu, epoch, dataloader, filename, evalname, args):
             correct += (predicted == labels).sum().item()
         accuracy = 100 * correct / total
     model.train()
-    with open(filename+"_accuracies.txt", "a+") as f:
-        print("Epoch {}. {} accuracy = {}%".format(epoch, evalname, accuracy), file=f)  
 
 if __name__ == '__main__':
     main()
