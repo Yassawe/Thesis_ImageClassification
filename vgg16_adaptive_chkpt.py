@@ -42,6 +42,30 @@ def setrandom(seed):
     #torch.use_deterministic_algorithms(True)
     torch.backends.cudnn.deterministic = True
 
+def save_checkpoint(ddp_model, optimizer, scheduler, epoch, folder, name):
+    path = folder+name + ".pt"
+
+    state = {
+            'epoch':epoch,
+            'model': ddp_model.module.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler':scheduler.state_dict()
+            }
+    
+    torch.save(state, path)
+
+def load_checkpoint(rank, model, optimizer, scheduler, path):
+
+    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+
+    checkpoint = torch.load(path, map_location=map_location)
+
+    model.load_state_dict(checkpoint['model']) 
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
+
+    return checkpoint['epoch']
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -54,6 +78,9 @@ def main():
 
     parser.add_argument('--name', default="VGG16", type=str)
     parser.add_argument('--experiment', default="baseline", type=str)
+    parser.add_argument('--chkpt_dump', default="./checkpoints/", type=str)
+
+    parser.add_argument('--checkpoint', default=None, type=str)
 
 
     args = parser.parse_args()
@@ -79,30 +106,34 @@ def main():
 def train(gpu, train_dataset, test_dataset, args):
     #DISTRIBUTED
     torch.cuda.set_device(gpu)
+
     dist.init_process_group(backend='nccl', world_size=args.gpus, rank=gpu)
 
+    customGroup = dist.new_group(backend='nccl') #inherits params from default process group
 
     #SETUPS
     setrandom(20214229)
     filename = "./"+args.experiment+"/"+args.name
     testdump = filename+"TEST_ACC.txt"
     traindump = filename+"TRAIN_ACC.txt"
+    checkpointdump = args.chkpt_dump
     ext = ".csv"
 
-
-    model = torchvision.models.vgg16(weights=None)
-
-
-    model.cuda(gpu)
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
+    accSamplePeriod = 5
+    
+    model = torchvision.models.vgg16(weights=None).cuda(gpu)
 
     #HYPERPARAMETERS
-
-    batch_size = 512//args.gpus # global batch size of 256
+    batch_size = 512//args.gpus # global batch size of 512
     criterion = nn.CrossEntropyLoss().cuda(gpu)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max')
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = 0.05, epochs=201, steps_per_epoch=98)
+
+    if args.checkpoint is not None:
+        print("loading a model")
+        load_checkpoint(gpu, model, optimizer, scheduler, args.checkpoint)
+    
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], output_device=gpu, process_group=customGroup)
 
     #DATASETS                           
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=args.gpus, rank=gpu)
@@ -113,26 +144,28 @@ def train(gpu, train_dataset, test_dataset, args):
                                                pin_memory=True,
                                                sampler=train_sampler)
 
+    test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
+                                              batch_size = batch_size,
+                                              shuffle=False,
+                                              pin_memory=True)
 
-
-    total_step = len(train_loader)
-
-
-    model.train()
-
-    idx = 0
-    # target_iter=100
-
-    # time_iters=[i for i in range(100,200)]
-    # start = torch.cuda.Event(enable_timing=True)
-    # end = torch.cuda.Event(enable_timing=True) 
-
-    # runtimes = [] 
+    eval_set = torch.utils.data.Subset(train_dataset, [random.randint(0,len(train_dataset)-1) for i in range(len(test_dataset))])
+    eval_loader = torch.utils.data.DataLoader(dataset=eval_set,
+                                              batch_size=batch_size,
+                                              shuffle=True,
+                                              pin_memory=True)
 
     total_step = len(train_loader)
 
     if gpu==0:
-        profiler.start()
+        with open(filename+ext, "w+") as f:
+            print("Loss", file=f)
+        open(testdump, "w+").close()
+        open(traindump, "w+").close()
+
+    model.train()
+
+    idx = 0
 
     for epoch in range(args.epochs):
         for i, (images, labels) in enumerate(train_loader):
@@ -141,10 +174,6 @@ def train(gpu, train_dataset, test_dataset, args):
             images = images.cuda(gpu, non_blocking=True)
 
             labels = labels.cuda(gpu, non_blocking=True)
-
-
-            # if idx in time_iters:
-            #     start.record()
 
             # Forward pass
             outputs = model(images)
@@ -155,27 +184,22 @@ def train(gpu, train_dataset, test_dataset, args):
             loss.backward()
             optimizer.step()
 
+            scheduler.step()
+
             if gpu == 0:
-                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch, args.epochs, i + 1, total_step, loss.item()))
+                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(epoch + 1, args.epochs, i + 1, total_step,
+                                                                         loss.item()))
+                with open(filename+ext, "a+") as f:
+                    print("{}".format(loss.item()), file=f)
+
+        if gpu==0 and epoch%accSamplePeriod==0:
+            evaluation(model, gpu, epoch+1, eval_loader, traindump, "Train set", args, scheduler)
+            evaluation(model, gpu, epoch+1, test_loader, testdump, "Test set", args, scheduler)
         
-        scheduler.step()
+        if gpu==0 and epoch==args.epochs-1:
+            save_checkpoint(model, optimizer, scheduler, epoch+1, checkpointdump, args.name)
+        
 
-        #     if idx in time_iters:
-        #         end.record()
-        #         torch.cuda.synchronize()
-        #         runtimes.append(start.elapsed_time(end))
-
-        #     if idx>=time_iters[-1]:
-        #         break
-
-        # if idx>=time_iters[-1]:
-        #     break
-
-    if gpu==0:
-        profiler.stop()
-    
-
-    #print("GPU {}. Model {}. Average iteration time = {}".format(gpu, args.name, sum(runtimes)/len(runtimes)))
 
 def evaluation(model, gpu, epoch, dataloader, filename, evalname, args, scheduler):
     model.eval()
@@ -191,11 +215,12 @@ def evaluation(model, gpu, epoch, dataloader, filename, evalname, args, schedule
             correct += (predicted == labels).sum().item()
         accuracy = 100 * correct / total
 
-    if evalname=="Test set":
-        scheduler.step(accuracy)
+    # if evalname=="Test set":
+    #     scheduler.step(accuracy)
 
     model.train()
-   
+    with open(filename, "a+") as f:
+        print("{}%".format(accuracy), file=f)
 
 if __name__ == '__main__':
     main()

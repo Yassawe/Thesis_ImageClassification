@@ -46,18 +46,19 @@ def setrandom(seed):
     torch.backends.cudnn.deterministic = True
 
 
-def save_checkpoint(ddp_model, optimizer, epoch, folder, name):
+def save_checkpoint(ddp_model, optimizer, scheduler, epoch, folder, name):
     path = folder+name + ".pt"
 
     state = {
             'epoch':epoch,
             'model': ddp_model.module.state_dict(),
             'optimizer': optimizer.state_dict(),
+            'scheduler':scheduler.state_dict()
             }
     
     torch.save(state, path)
 
-def load_checkpoint(rank, model, optimizer, path):
+def load_checkpoint(rank, model, optimizer, scheduler, path):
 
     map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
 
@@ -65,6 +66,7 @@ def load_checkpoint(rank, model, optimizer, path):
 
     model.load_state_dict(checkpoint['model']) 
     optimizer.load_state_dict(checkpoint['optimizer'])
+    scheduler.load_state_dict(checkpoint['scheduler'])
 
     return checkpoint['epoch']
 
@@ -81,7 +83,9 @@ def main():
 
     parser.add_argument('--name', default="baseline", type=str)
     parser.add_argument('--experiment', default="baseline", type=str)
+
     parser.add_argument('--recordCheckpoints', default=0, type=int)
+    parser.add_argument('--epochsforstage', type=int)
     parser.add_argument('--checkpoint_path', default=None, type=str)
 
     
@@ -107,11 +111,11 @@ def main():
     mp.spawn(train, nprocs=args.gpus, args=(train_dataset, test_dataset, args,))
 
 
-
 def train(gpu, train_dataset, test_dataset, args):
     #DISTRIBUTED
     torch.cuda.set_device(gpu)
     dist.init_process_group(backend='nccl', world_size=args.gpus, rank=gpu)
+    customGroup = dist.new_group(backend='nccl') #inherits params from default process group
 
 
     #SETUPS
@@ -121,10 +125,10 @@ def train(gpu, train_dataset, test_dataset, args):
 
     testdump = filename+"TEST_ACC.txt"
     traindump = filename+"TRAIN_ACC.txt"
-    checkpointdump = "./checkpoints/"
+    checkpointdump = "./Adaptive/checkpoints/"
 
     accSamplePeriod = 5
-    checkpointPeriod = 50
+    epochsForStage = args.epochsforstage
 
 
     #MODEL AND HYPERPARAMETERS
@@ -133,16 +137,16 @@ def train(gpu, train_dataset, test_dataset, args):
     batch_size = 512//args.gpus
     criterion = nn.CrossEntropyLoss().cuda(gpu)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1.5e-2)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=201)
     total_epochs = args.epochs
     lastCheckpointEpoch=0
 
     if args.checkpoint_path is not None:
-        lastCheckpointEpoch = load_checkpoint(gpu, model, optimizer, args.checkpoint_path)
+        lastCheckpointEpoch = load_checkpoint(gpu, model, optimizer, scheduler, args.checkpoint_path)
 
     total_epochs-=lastCheckpointEpoch
     
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], output_device=gpu, process_group=customGroup)
 
     
     #DATASETS                           
@@ -177,15 +181,37 @@ def train(gpu, train_dataset, test_dataset, args):
     idx = 0
     model.train()
 
+    prune_schedule = [0, 50, 125]
+    prune_methods = ["/usr/lib/x86_64-linux-gnu/", "/src/main/modified_nccl/deviceDropping_X1/build/lib/", "/src/main/modified_nccl/deviceDropping_X2/build/lib/"]
+    prune_counter=0
+    prune_steps=3
+
     for epoch in range(total_epochs):
+        if prune_counter<prune_steps-1:
+            if epoch==prune_schedule[prune_counter]:
+                dist.barrier()
+                os.environ["LD_LIBRARY_PATH"] = prune_methods[prune_counter]
+                customGroup = dist.new_group(backend='nccl')
+                unwrapped_model = model.module
+
+                opt_dict = optimizer.state_dict()
+                sch_dict = scheduler.state_dict()
+
+                optimizer = torch.optim.SGD(unwrapped_model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1.5e-2)
+                optimizer.load_state_dict(opt_dict)
+
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=201)
+                scheduler.load_state_dict(sch_dict)
+
+                model = nn.parallel.DistributedDataParallel(unwrapped_model, device_ids=[gpu], output_device=gpu, process_group=customGroup)
+
+                prune_counter+=1
+
         for i, (images, labels) in enumerate(train_loader):
             idx+=1
             
             images = images.cuda(gpu, non_blocking=True)
             labels = labels.cuda(gpu, non_blocking=True)
-
-            # if idx == target_iter:
-            #     profiler.start()
 
             # Forward pass
             outputs = model(images)
@@ -196,27 +222,20 @@ def train(gpu, train_dataset, test_dataset, args):
             loss.backward()
             
             optimizer.step()
-
-            # if idx == target_iter:
-            #     dist.barrier()
-            #     profiler.stop()
-            #     break
             
             if gpu == 0:
-                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch+lastCheckpointEpoch, args.epochs, i + 1, total_step, loss.item()))
+                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch+lastCheckpointEpoch, total_epochs, i + 1, total_step, loss.item()))
                 with open(filename+ext, "a+") as f:
                     print("{}".format(loss.item()), file=f)
         
-        
-
         scheduler.step()   
         
         if gpu==0 and (epoch)%accSamplePeriod==0:
             evaluation(model, gpu, epoch+lastCheckpointEpoch+1, eval_loader, traindump, "TRAIN SET", args)
             evaluation(model, gpu, epoch+lastCheckpointEpoch+1, test_loader, testdump, "TEST SET", args)
 
-        if gpu==0 and (epoch)%checkpointPeriod==0 and args.recordCheckpoints==1:
-            save_checkpoint(model, optimizer, epoch+lastCheckpointEpoch+1, checkpointdump, args.name+"_"+str(epoch+lastCheckpointEpoch))
+        if gpu==0 and epoch==total_epochs-1 and args.recordCheckpoints==1:
+            save_checkpoint(model, optimizer, scheduler, epoch+lastCheckpointEpoch+1, checkpointdump, args.name)
 
 
 def evaluation(model, gpu, epoch, dataloader, file, evalname, args):

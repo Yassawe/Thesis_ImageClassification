@@ -2,13 +2,13 @@
 #      Baselines      #
 #######################
 
-## RESNET50
+# RESNET50
 # export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
-# python3 distributedModelTraining_resnet50.py --gpus 4 --epochs 201 --lr 1e-2 --experiment baseline --name RESNET50 
+# python3 distributedModelTraining_resnet50.py --gpus 4 --epochs 210 --lr 1e-2 --experiment baseline --name RESNET50 --recordCheckpoints=1
 
-## VGG16
+# VGG16
 # export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
-# python3 distributedModelTraining_vgg16.py --gpus 4 --epochs 201 --lr 1e-2  --experiment baseline --name VGG16 
+# python3 distributedModelTraining_vgg16.py --gpus 4 --epochs 201 --lr 1e-2  --experiment baseline --name VGG16_new 
 
 
 ########################
@@ -83,65 +83,61 @@
 
 
 
+# python3 resnet50_adaptive.py --gpus 4 --epochs 201 --lr 1e-2 --experiment Adaptive --name RESNET50_ADAPTIVE
 
-####################
-# Kernel Profiling #
-#                  #
-####################
+#############################
+#        VGG16 ADAPTIVE     #
+#                           #
+#############################
 
-# #RESNET50
 
-export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/RESNET50_%p.csv python3 resnet50_timing.py --gpus 4 --epochs 1 --lr 0.01  --name resnet50
-
-export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1/build/lib/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/RESNET50_X1_%p.csv python3 resnet50_timing.py --gpus 4 --epochs 1 --lr 0.01  --name resnet50_x1
-
-export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X2/build/lib/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/RESNET50_X2_%p.csv python3 resnet50_timing.py --gpus 4 --epochs 1 --lr 0.01  --name resnet50_x2
-
-export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1Y1/build/lib/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/RESNET50_X1Y1_%p.csv python3 resnet50_timing.py --gpus 4 --epochs 1 --lr 0.01  --name resnet50_x1y2
-
-# #VGG16
+#in order: B.50, RS1.50, RS2.100
 
 export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/VGG16_%p.csv python3 vgg16_timing.py --gpus 4 --epochs 1 --lr 0.01  --name vgg16
+python3 vgg16_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/inorder1 --name VGG16_STAGE1 --chkpt_dump ./checkpoints1/
 
 export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1/build/lib/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/VGG16_X1_%p.csv python3 vgg16_timing.py --gpus 4 --epochs 1 --lr 0.01  --name vgg16_x1
+python3 vgg16_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/inorder1 --name VGG16_STAGE2 --chkpt_dump ./checkpoints1/ --checkpoint ./checkpoints1/VGG16_STAGE1.pt
 
 export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X2/build/lib/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/VGG16_X2_%p.csv python3 vgg16_timing.py --gpus 4 --epochs 1 --lr 0.01  --name vgg16_x2
-
-export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1Y1/build/lib/
-nvprof --devices 0 --concurrent-kernels on --profile-child-processes --trace gpu --print-gpu-trace --openacc-profiling off --normalized-time-unit ms --profile-from-start off --csv --log-file ./csv/VGG16_X1Y1%p.csv python3 vgg16_timing.py --gpus 4 --epochs 1 --lr 0.01  --name vgg16_x1y1
+python3 vgg16_adaptive_chkpt.py --gpus 4 --epochs 101 --lr 1e-2 --experiment adapt_chkpt/inorder1 --name VGG16_STAGE3 --chkpt_dump ./checkpoints1/ --checkpoint ./checkpoints1/VGG16_STAGE2.pt
 
 
-#####################
-#    CUDA TIMING    #
-#####################
+#revorder: RS2.100, RS1.50, B.50
 
-# export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
-# python3 resnet50_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name resnet50 
+export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X2/build/lib/
+python3 vgg16_adaptive_chkpt.py --gpus 4 --epochs 101 --lr 1e-2 --experiment adapt_chkpt/revorder1 --name VGG16_STAGE1 --chkpt_dump ./checkpoints2/
 
-# export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1/build/lib/
-# python3 resnet50_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name resnet50_X1 
+export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1/build/lib/
+python3 vgg16_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/revorder1 --name VGG16_STAGE2 --chkpt_dump ./checkpoints2/ --checkpoint ./checkpoints2/VGG16_STAGE1.pt
 
-# export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X2/build/lib/
-# python3 resnet50_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name resnet50_X2
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
+python3 vgg16_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/revorder1 --name VGG16_STAGE3 --chkpt_dump ./checkpoints2/ --checkpoint ./checkpoints2/VGG16_STAGE2.pt
 
-# export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1Y1/build/lib/
-# python3 resnet50_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name resnet50_X1Y1
 
-# export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
-# python3 vgg16_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name vgg16 
+#############################
+#     RESNET50 ADAPTIVE     #
+#                           #
+#############################
 
-# export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1/build/lib/
-# python3 vgg16_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name vgg16_X1 
+#inorder: B.50, RS1.50, RS2.100
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
+python3 resnet50_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/inorder1 --name RESNET50_STAGE1 --chkpt_dump ./checkpoints1/
 
-# export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X2/build/lib/
-# python3 vgg16_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name vgg16_X2
+export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1/build/lib/
+python3 resnet50_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/inorder1 --name RESNET50_STAGE2 --chkpt_dump ./checkpoints1/ --checkpoint ./checkpoints1/RESNET50_STAGE1.pt
 
-# export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1Y1/build/lib/
-# python3 vgg16_timing.py --gpus 4 --epochs 201 --lr 1e-2 --experiment null --name vgg16_X1Y1
+export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X2/build/lib/
+python3 resnet50_adaptive_chkpt.py --gpus 4 --epochs 101 --lr 1e-2 --experiment adapt_chkpt/inorder1 --name RESNET50_STAGE3 --chkpt_dump ./checkpoints1/ --checkpoint ./checkpoints1/RESNET50_STAGE2.pt
+
+
+#revorder: RS2.100, RS1.50, B.50
+export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X2/build/lib/
+python3 resnet50_adaptive_chkpt.py --gpus 4 --epochs 101 --lr 1e-2 --experiment adapt_chkpt/revorder1 --name RESNET50_STAGE1 --chkpt_dump ./checkpoints2/
+
+export LD_LIBRARY_PATH=/src/main/modified_nccl/deviceDropping_X1/build/lib/
+python3 resnet50_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/revorder1 --name RESNET50_STAGE2 --chkpt_dump ./checkpoints2/ --checkpoint ./checkpoints2/RESNET50_STAGE1.pt
+
+export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/ 
+python3 resnet50_adaptive_chkpt.py --gpus 4 --epochs 51 --lr 1e-2 --experiment adapt_chkpt/revorder1 --name RESNET50_STAGE3 --chkpt_dump ./checkpoints2/ --checkpoint ./checkpoints2/RESNET50_STAGE2.pt
+
