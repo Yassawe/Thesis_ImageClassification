@@ -1,5 +1,5 @@
 """
-all research code is always a mess, i didn't care about clean code or anything like that here
+by progressive we mean using different degree of pruning on different iterations. here, it is achieved by checkpointing and loading. specify checkpoint folder for an experiment 
 """
 
 import os
@@ -87,6 +87,7 @@ def main():
     parser.add_argument('--recordCheckpoints', default=0, type=int)
     parser.add_argument('--epochsforstage', type=int)
     parser.add_argument('--checkpoint_path', default=None, type=str)
+    parser.add_argument('--chkpt_dump', default="./checkpoints/", type=str)
 
     
 
@@ -119,13 +120,13 @@ def train(gpu, train_dataset, test_dataset, args):
 
 
     #SETUPS
-    setrandom(20214229)
+    #setrandom(20214229)
     filename = "./"+args.experiment+"/"+args.name
     ext = ".csv"
 
     testdump = filename+"TEST_ACC.txt"
     traindump = filename+"TRAIN_ACC.txt"
-    checkpointdump = "./Adaptive/checkpoints/"
+    checkpointdump = args.chkpt_dump
 
     accSamplePeriod = 5
     epochsForStage = args.epochsforstage
@@ -138,13 +139,12 @@ def train(gpu, train_dataset, test_dataset, args):
     criterion = nn.CrossEntropyLoss().cuda(gpu)
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1.5e-2)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=201)
-    total_epochs = args.epochs
-    lastCheckpointEpoch=0
+    
 
     if args.checkpoint_path is not None:
-        lastCheckpointEpoch = load_checkpoint(gpu, model, optimizer, scheduler, args.checkpoint_path)
+        print("loading a model")
+        load_checkpoint(gpu, model, optimizer, scheduler, args.checkpoint_path)
 
-    total_epochs-=lastCheckpointEpoch
     
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], output_device=gpu, process_group=customGroup)
 
@@ -181,31 +181,7 @@ def train(gpu, train_dataset, test_dataset, args):
     idx = 0
     model.train()
 
-    prune_schedule = [0, 50, 125]
-    prune_methods = ["/usr/lib/x86_64-linux-gnu/", "/src/main/modified_nccl/deviceDropping_X1/build/lib/", "/src/main/modified_nccl/deviceDropping_X2/build/lib/"]
-    prune_counter=0
-    prune_steps=3
-
-    for epoch in range(total_epochs):
-        if prune_counter<prune_steps-1:
-            if epoch==prune_schedule[prune_counter]:
-                dist.barrier()
-                os.environ["LD_LIBRARY_PATH"] = prune_methods[prune_counter]
-                customGroup = dist.new_group(backend='nccl')
-                unwrapped_model = model.module
-
-                opt_dict = optimizer.state_dict()
-                sch_dict = scheduler.state_dict()
-
-                optimizer = torch.optim.SGD(unwrapped_model.parameters(), lr=args.lr, momentum=0.9, weight_decay=1.5e-2)
-                optimizer.load_state_dict(opt_dict)
-
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=201)
-                scheduler.load_state_dict(sch_dict)
-
-                model = nn.parallel.DistributedDataParallel(unwrapped_model, device_ids=[gpu], output_device=gpu, process_group=customGroup)
-
-                prune_counter+=1
+    for epoch in range(args.epochs):
 
         for i, (images, labels) in enumerate(train_loader):
             idx+=1
@@ -224,18 +200,18 @@ def train(gpu, train_dataset, test_dataset, args):
             optimizer.step()
             
             if gpu == 0:
-                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch+lastCheckpointEpoch, total_epochs, i + 1, total_step, loss.item()))
+                print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch, args.epochs, i + 1, total_step, loss.item()))
                 with open(filename+ext, "a+") as f:
                     print("{}".format(loss.item()), file=f)
         
         scheduler.step()   
         
         if gpu==0 and (epoch)%accSamplePeriod==0:
-            evaluation(model, gpu, epoch+lastCheckpointEpoch+1, eval_loader, traindump, "TRAIN SET", args)
-            evaluation(model, gpu, epoch+lastCheckpointEpoch+1, test_loader, testdump, "TEST SET", args)
+            evaluation(model, gpu, epoch+1, eval_loader, traindump, "TRAIN SET", args)
+            evaluation(model, gpu, epoch+1, test_loader, testdump, "TEST SET", args)
 
-        if gpu==0 and epoch==total_epochs-1 and args.recordCheckpoints==1:
-            save_checkpoint(model, optimizer, scheduler, epoch+lastCheckpointEpoch+1, checkpointdump, args.name)
+        if gpu==0 and epoch==args.epochs-1:
+            save_checkpoint(model, optimizer, scheduler, epoch+1, checkpointdump, args.name)
 
 
 def evaluation(model, gpu, epoch, dataloader, file, evalname, args):

@@ -115,7 +115,7 @@ def train(gpu, train_dataset, test_dataset, args):
     filename = "./"+args.experiment+"/"+args.name
     testdump = filename+"TEST_ACC.txt"
     traindump = filename+"TRAIN_ACC.txt"
-    checkpointdump = "./Adaptive/checkpoints/"
+    checkpointdump = "./checkpoints/"
     ext = ".csv"
 
     accSamplePeriod = 5

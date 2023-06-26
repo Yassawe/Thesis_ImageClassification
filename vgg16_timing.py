@@ -1,5 +1,5 @@
 """
-all research code is always a mess, i didn't care about clean code or anything like that here
+this is to measure training time (on GPU). I run it for 5 epochs and then divided the total GPU time by 5*98 (epochs*stepsperepoch)
 """
 
 import os
@@ -121,13 +121,6 @@ def train(gpu, train_dataset, test_dataset, args):
     model.train()
 
     idx = 0
-    # target_iter=100
-
-    # time_iters=[i for i in range(100,200)]
-    # start = torch.cuda.Event(enable_timing=True)
-    # end = torch.cuda.Event(enable_timing=True) 
-
-    # runtimes = [] 
 
     total_step = len(train_loader)
 
@@ -143,9 +136,6 @@ def train(gpu, train_dataset, test_dataset, args):
             labels = labels.cuda(gpu, non_blocking=True)
 
 
-            # if idx in time_iters:
-            #     start.record()
-
             # Forward pass
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -160,22 +150,9 @@ def train(gpu, train_dataset, test_dataset, args):
         
         scheduler.step()
 
-        #     if idx in time_iters:
-        #         end.record()
-        #         torch.cuda.synchronize()
-        #         runtimes.append(start.elapsed_time(end))
-
-        #     if idx>=time_iters[-1]:
-        #         break
-
-        # if idx>=time_iters[-1]:
-        #     break
-
     if gpu==0:
         profiler.stop()
-    
 
-    #print("GPU {}. Model {}. Average iteration time = {}".format(gpu, args.name, sum(runtimes)/len(runtimes)))
 
 def evaluation(model, gpu, epoch, dataloader, filename, evalname, args, scheduler):
     model.eval()

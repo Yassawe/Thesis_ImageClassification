@@ -1,5 +1,5 @@
 """
-all research code is always a mess, i didn't care about clean code or anything like that here
+this is to measure training time (on GPU). I run it for 5 epochs and then divided the total GPU time by 5*98 (epochs*stepsperepoch)
 """
 
 import os
@@ -143,14 +143,6 @@ def train(gpu, train_dataset, test_dataset, args):
     idx = 0
     model.train()
 
-
-    # target_iter = 100
-    # time_iters=[i for i in range(100,200)]
-    # start = torch.cuda.Event(enable_timing=True)
-    # end = torch.cuda.Event(enable_timing=True) 
-
-    # runtimes = [] 
-
     total_step = len(train_loader)
     
     if gpu==0:
@@ -162,9 +154,6 @@ def train(gpu, train_dataset, test_dataset, args):
             
             images = images.cuda(gpu, non_blocking=True)
             labels = labels.cuda(gpu, non_blocking=True)
-
-            # if idx in time_iters:
-            #     start.record()
 
             # Forward pass
             outputs = model(images)
@@ -178,26 +167,10 @@ def train(gpu, train_dataset, test_dataset, args):
 
             if gpu == 0:
                 print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch, args.epochs, i + 1, total_step, loss.item()))
-
-            # if idx in time_iters:
-            #     end.record()
-            #     torch.cuda.synchronize()
-            #     runtimes.append(start.elapsed_time(end))
-
-
-            
-        #     if idx>=time_iters[-1]:
-        #         break
-        # if idx>=time_iters[-1]:
-        #     break
-
         scheduler.step()
     
     if gpu==0:
-        profiler.stop()
-
-    # print("GPU {}. Model {}. Average iteration time = {}".format(gpu, args.name, sum(runtimes)/len(runtimes)))  
-        
+        profiler.stop() 
        
 
 def evaluation(model, gpu, epoch, dataloader, file, evalname, args):

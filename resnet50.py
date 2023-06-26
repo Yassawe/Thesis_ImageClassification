@@ -125,10 +125,9 @@ def train(gpu, train_dataset, test_dataset, args):
 
     testdump = filename+"TEST_ACC.txt"
     traindump = filename+"TRAIN_ACC.txt"
-    checkpointdump = "./Adaptive/checkpoints/"
+    checkpointdump = "./checkpoints/"
 
     accSamplePeriod = 5
-    epochsForStage = args.epochsforstage
 
 
     #MODEL AND HYPERPARAMETERS
@@ -181,8 +180,6 @@ def train(gpu, train_dataset, test_dataset, args):
     idx = 0
     model.train()
 
-    grad_collect = [10, 1000]
-
     for epoch in range(total_epochs):
         for i, (images, labels) in enumerate(train_loader):
             idx+=1
@@ -197,41 +194,19 @@ def train(gpu, train_dataset, test_dataset, args):
             # Backward and optimize
             optimizer.zero_grad()
             loss.backward()
-
-            if gpu==0:
-                 if idx in grad_collect:
-                     print("extracting grads at iteration {}".format(idx))
-                     g = torch.Tensor().cuda(gpu)
-                     for params in model.parameters():
-                         t = params.grad
-                         t = torch.flatten(t)
-                         g = torch.cat((g,t))
-
-                     g_np = g.cpu().numpy()
-                     np.savetxt("./grads/RESNET_{}.txt".format(idx), g_np)
-                     print("done extracting grads")
-            
             optimizer.step()
 
-            if idx>grad_collect[-1]:
-                break
-            
             if gpu == 0:
                 print('Epoch [{}/{}]. Step [{}/{}], Loss: {:.4f}'.format(epoch+lastCheckpointEpoch, total_epochs, i + 1, total_step, loss.item()))
-                # with open(filename+ext, "a+") as f:
-                #     print("{}".format(loss.item()), file=f)
+                with open(filename+ext, "a+") as f:
+                    print("{}".format(loss.item()), file=f)
         
         scheduler.step()   
-
-        if idx>grad_collect[-1]:
-            break
         
-        # if gpu==0 and (epoch)%accSamplePeriod==0:
-        #     evaluation(model, gpu, epoch+lastCheckpointEpoch+1, eval_loader, traindump, "TRAIN SET", args)
-        #     evaluation(model, gpu, epoch+lastCheckpointEpoch+1, test_loader, testdump, "TEST SET", args)
+        if gpu==0 and (epoch)%accSamplePeriod==0:
+            evaluation(model, gpu, epoch+lastCheckpointEpoch+1, eval_loader, traindump, "TRAIN SET", args)
+            evaluation(model, gpu, epoch+lastCheckpointEpoch+1, test_loader, testdump, "TEST SET", args)
 
-        # if gpu==0 and epoch==epochsForStage and args.recordCheckpoints==1:
-        #     save_checkpoint(model, optimizer, scheduler, epoch+lastCheckpointEpoch+1, checkpointdump, args.name)
         
 
 
